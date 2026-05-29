@@ -1,6 +1,6 @@
 // api/brands.js
 // GET /api/brands
-// Devuelve lista de marcas de Infoauto (con cache en Supabase 24hs)
+// Usa /brands/download/ para traer TODAS las marcas de una vez (sin paginación)
 
 import { getValidToken } from '../lib/token.js';
 import { createClient } from '@supabase/supabase-js';
@@ -16,8 +16,9 @@ export default async function handler(req, res) {
   if (req.method !== 'GET') return res.status(405).end();
 
   try {
-    // Check cache in Supabase (valid 24hs)
     const sb = supabase();
+
+    // Check cache in Supabase (valid 24hs)
     const { data: cache } = await sb
       .from('infoauto_cache')
       .select('*')
@@ -31,27 +32,30 @@ export default async function handler(req, res) {
       }
     }
 
-    // Fetch from Infoauto
+    // /brands/download/ trae TODAS las marcas con sus grupos — sin paginación
     const token = await getValidToken();
-    const iaRes = await fetch(`${IA_BASE}/brands/`, {
+    const iaRes = await fetch(`${IA_BASE}/brands/download/`, {
       headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
     });
-    if (!iaRes.ok) throw new Error(`Infoauto brands error: ${iaRes.status}`);
-    const brands = await iaRes.json();
+    if (!iaRes.ok) throw new Error(`Infoauto brands/download error: ${iaRes.status}`);
+    const data = await iaRes.json();
 
-    // Map to simple format
-    const result = (Array.isArray(brands) ? brands : [])
+    // El response es array de marcas con grupos anidados
+    const brands = Array.isArray(data) ? data : (data.results || data.brands || []);
+
+    const result = brands
       .map(b => ({ id: b.id, name: b.name }))
+      .filter(b => b.id && b.name)
       .sort((a, b) => a.name.localeCompare(b.name));
 
-    // Save to cache
+    // Guardar en cache
     await sb.from('infoauto_cache').upsert({
       key: 'brands',
       value: JSON.stringify(result),
       updated_at: new Date().toISOString()
     });
 
-    return res.status(200).json({ ok: true, brands: result, cached: false });
+    return res.status(200).json({ ok: true, brands: result, cached: false, total: result.length });
 
   } catch (err) {
     console.error('Brands error:', err.message);
