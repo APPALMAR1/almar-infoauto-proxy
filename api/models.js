@@ -1,6 +1,6 @@
 // api/models.js
 // GET /api/models?brand_id=X
-// Devuelve modelos de una marca (con cache en Supabase 24hs)
+// Trae TODOS los modelos de una marca paginando hasta agotar resultados
 
 import { getValidToken } from '../lib/token.js';
 import { createClient } from '@supabase/supabase-js';
@@ -22,7 +22,7 @@ export default async function handler(req, res) {
     const sb = supabase();
     const cacheKey = `models_${brand_id}`;
 
-    // Check cache
+    // Check cache (valid 24hs)
     const { data: cache } = await sb
       .from('infoauto_cache')
       .select('*')
@@ -36,41 +36,65 @@ export default async function handler(req, res) {
       }
     }
 
-    // Fetch from Infoauto - get all models for brand
     const token = await getValidToken();
-    const iaRes = await fetch(`${IA_BASE}/brands/${brand_id}/models/`, {
-      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
-    });
-    if (!iaRes.ok) throw new Error(`Infoauto models error: ${iaRes.status}`);
-    const models = await iaRes.json();
+    let allModels = [];
+    let page = 1;
+    const pageSize = 100;
 
-    // Map - group by group name, deduplicate
-    const seen = new Set();
-    const result = (Array.isArray(models) ? models : [])
-      .filter(m => m.prices && m.prices_to >= new Date().getFullYear() - 15)
-      .map(m => ({
-        codia: m.codia,
-        descripcion: m.description,
-        grupo: m.group?.name || '',
-        anioDesde: m.prices_from,
-        anioHasta: m.prices_to,
-      }))
-      .filter(m => {
-        const key = m.grupo + '_' + m.descripcion;
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      })
-      .sort((a, b) => (a.grupo + a.descripcion).localeCompare(b.grupo + b.descripcion));
+    // Paginar hasta traer todos los modelos
+    while (true) {
+      const url = `${IA_BASE}/brands/${brand_id}/models/?page=${page}&page_size=${pageSize}`;
+      const iaRes = await fetch(url, {
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
+      });
+      if (!iaRes.ok) break;
+      const data = await iaRes.json();
+      const items = Array.isArray(data) ? data : (data.results || []);
+      if (!items.length) break;
+      allModels = allModels.concat(items);
+      if (items.length < pageSize) break;
+      page++;
+      if (page > 20) break; // Seguridad: máximo 2000 modelos
+    }
 
-    // Save cache
+    // Agrupar por grupo, filtrar con precios usados o 0km
+    const gruposMap = {};
+    allModels
+      .filter(m => m.prices || m.list_price)
+      .forEach(m => {
+        const grupo = m.group?.name || 'SIN GRUPO';
+        if (!gruposMap[grupo]) {
+          gruposMap[grupo] = {
+            grupo,
+            anioDesde: m.prices_from || null,
+            anioHasta: m.prices_to || null,
+            versiones: []
+          };
+        }
+        const g = gruposMap[grupo];
+        if (m.prices_from && (!g.anioDesde || m.prices_from < g.anioDesde)) g.anioDesde = m.prices_from;
+        if (m.prices_to   && (!g.anioHasta || m.prices_to   > g.anioHasta)) g.anioHasta = m.prices_to;
+        if (m.prices || m.list_price) {
+          g.versiones.push({
+            codia: m.codia,
+            descripcion: m.description,
+            anioDesde: m.prices_from,
+            anioHasta: m.prices_to,
+          });
+        }
+      });
+
+    const result = Object.values(gruposMap)
+      .sort((a, b) => a.grupo.localeCompare(b.grupo));
+
+    // Guardar cache
     await sb.from('infoauto_cache').upsert({
       key: cacheKey,
       value: JSON.stringify(result),
       updated_at: new Date().toISOString()
     });
 
-    return res.status(200).json({ ok: true, models: result, cached: false });
+    return res.status(200).json({ ok: true, models: result, cached: false, total: result.length });
 
   } catch (err) {
     console.error('Models error:', err.message);
