@@ -31,7 +31,7 @@ export default async function handler(req, res) {
 
     if (cache) {
       const age = Date.now() - new Date(cache.updated_at).getTime();
-      if (age < 24 * 60 * 60 * 1000) {
+      if (age < 7 * 24 * 60 * 60 * 1000) // Cache 7 días {
         return res.status(200).json({ ok: true, models: JSON.parse(cache.value), cached: true });
       }
     }
