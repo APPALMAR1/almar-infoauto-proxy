@@ -1,34 +1,32 @@
 // api/keepalive.js
-// Cron job: se ejecuta cada 3 días para mantener Supabase activo
-
-import { createClient } from '@supabase/supabase-js';
+// Cron job: ping simple a Supabase cada 3 dias para evitar pausa
 
 export default async function handler(req, res) {
-  const isGet = req.method === 'GET';
-  if (!isGet && req.headers['x-vercel-cron'] !== '1') return res.status(405).end();
+  if (req.method !== 'GET' && req.headers['x-vercel-cron'] !== '1')
+    return res.status(405).end();
 
   try {
-    const sb = createClient(
-      process.env.SUPABASE_URL,
-      process.env.SUPABASE_SECRET_KEY
-    );
+    // Ping HTTP simple a Supabase — solo verifica que responda
+    // No requiere permisos de tabla
+    const supabaseUrl = process.env.SUPABASE_URL;
+    const supabaseKey = process.env.SUPABASE_SECRET_KEY;
 
-    // Ping usando rpc simple — solo verifica conexión sin necesitar permisos de tabla
-    const { error } = await sb.rpc('now');
+    const pingRes = await fetch(`${supabaseUrl}/rest/v1/`, {
+      headers: {
+        'apikey': supabaseKey,
+        'Authorization': `Bearer ${supabaseKey}`
+      }
+    });
 
-    // Si falla rpc, intentar con una query básica
-    if (error) {
-      const { error: err2 } = await sb
-        .from('infoauto_token')
-        .select('id')
-        .limit(1);
-      if (err2) throw new Error(err2.message);
-    }
+    // Cualquier respuesta (200, 404, etc) significa que Supabase está activo
+    const alive = pingRes.status < 500;
 
-    console.log('[keepalive] Supabase activo:', new Date().toISOString());
+    console.log('[keepalive] Supabase status:', pingRes.status, new Date().toISOString());
+
     return res.status(200).json({
-      ok: true,
-      message: 'Supabase keepalive OK',
+      ok: alive,
+      message: alive ? 'Supabase keepalive OK' : 'Supabase no responde',
+      supabase_status: pingRes.status,
       timestamp: new Date().toISOString()
     });
 
